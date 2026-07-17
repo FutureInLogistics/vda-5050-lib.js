@@ -10,11 +10,14 @@ import {
     ClientOptions,
     Edge,
     Error,
+    ErrorLevel,
     ErrorType,
+    EStop,
     Headerless,
     InstantActions,
     MasterControlClient,
     Node,
+    OperatingMode,
     Optional,
     Order,
     State,
@@ -266,6 +269,56 @@ export interface MasterControllerOptions {
 }
 
 /**
+ * Represents a snapshot of an order state cache held by a `MasterController`, as
+ * returned by `MasterController.getAllOrders` and
+ * `MasterController.cancelOrderId`.
+ *
+ * @category Master Controller
+ */
+export interface OrderInfo {
+
+    /**
+     * Identifies the AGV this order was assigned to.
+     */
+    readonly agvId: AgvId;
+
+    /**
+     * The orderId of the cached order.
+     */
+    readonly orderId: string;
+
+    /**
+     * The orderUpdateId of the cached order.
+     */
+    readonly orderUpdateId: number;
+
+    /**
+     * The `active` value most recently reported to the `onOrderProcessed`
+     * handler for this order, or `null` if that handler has not yet been invoked
+     * (i.e. the order has not yet been processed).
+     */
+    readonly lastReportedActive: boolean | null;
+
+    /**
+     * Whether this cache is the most recently assigned order for its AGV (i.e.
+     * the head of the stitching chain).
+     */
+    readonly isLatestAssigned: boolean;
+
+    /**
+     * The order's node/edge actions whose completion this order is (or was)
+     * waiting on, including actions inherited from stitched-onto predecessor
+     * orders, together with the last action status reported by the AGV (or
+     * `undefined` if the AGV never reported a state for that action).
+     */
+    readonly pendingActions: ReadonlyArray<{
+        readonly actionId: string;
+        readonly actionType: string;
+        readonly lastStatus: ActionStatus | undefined;
+    }>;
+}
+
+/**
  * Implements the common control logic and interaction flows on the coordination
  * plane (master control) as defined by the VDA 5050 specification. This
  * includes assigning orders and initiating instant actions, as well as
@@ -292,6 +345,10 @@ export class MasterController extends MasterControlClient {
 
     // Order state caches mapped by agvId, orderId, orderUpdateId.
     private readonly _currentOrders: AgvIdMap<Map<string, Map<number, OrderStateCache>>> = new AgvIdMap();
+
+    // Most recent State object received per AGV. Used as a fallback order event
+    // context when forcibly resetting order caches via `cancelOrderId`.
+    private readonly _lastStateByAgv: AgvIdMap<State> = new AgvIdMap();
 
     // Instant action state caches mapped by agvId, actionId.
     private readonly _currentInstantActions: AgvIdMap<Map<string, InstantActionStateCache>> = new AgvIdMap();
@@ -449,6 +506,138 @@ export class MasterController extends MasterControlClient {
     }
 
     /**
+     * Gets a snapshot of all order state caches currently tracked by this master
+     * controller, optionally filtered by a specific AGV.
+     *
+     * @remarks
+     * This is an introspection utility, primarily useful together with
+     * `cancelOrderId` to detect and recover from order state caches that can no
+     * longer be completed or canceled through the regular VDA 5050 message flow,
+     * for example after an AGV has lost its active order (e.g. due to a restart
+     * that cleared its state) while the master controller still considers the
+     * order active.
+     *
+     * The returned objects are plain data snapshots; mutating them has no effect
+     * on the controller's internal state.
+     *
+     * @param agvId identifies the AGV whose order caches should be returned
+     * (optional); if omitted, caches of all AGVs are returned
+     * @returns an array of `OrderInfo` snapshots (possibly empty)
+     */
+    getAllOrders(agvId?: AgvId): OrderInfo[] {
+        const result: OrderInfo[] = [];
+        const collect = (orderIds: Map<string, Map<number, OrderStateCache>>) => {
+            const head = orderIds["lastCache"] as OrderStateCache;
+            for (const [, orderUpdateIds] of orderIds) {
+                for (const [, cache] of orderUpdateIds) {
+                    result.push(this._toOrderInfo(cache, head));
+                }
+            }
+        };
+        if (agvId !== undefined) {
+            const orderIds = this._currentOrders.get(agvId);
+            if (orderIds !== undefined) {
+                collect(orderIds);
+            }
+        } else {
+            for (const [, orderIds] of this._currentOrders) {
+                collect(orderIds);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Forcibly resets and removes order state caches held by this master
+     * controller for the given AGV, without requiring any interaction with the
+     * AGV itself.
+     *
+     * @remarks
+     * Use this method to recover from a situation where the master controller
+     * keeps an order cache that can no longer be completed or canceled through
+     * the regular VDA 5050 message flow, e.g. after an AGV has lost its active
+     * order (due to a restart clearing its state) while the master controller
+     * still considers the order active. In such a case, neither order completion
+     * nor a `cancelOrder` instant action can ever clear the cache, because the
+     * AGV no longer reports the corresponding node/edge/action states.
+     *
+     * For each affected order cache, the registered `onOrderProcessed` handler is
+     * invoked once with a synthetic reset error (`withError`), `byCancelation`
+     * false, and `active` false, so that application logic awaiting order
+     * termination is released. Afterwards, the cache is discarded.
+     *
+     * This method operates purely on master controller state; it does NOT publish
+     * anything to the AGV. If the targeted order might still be executing on the
+     * AGV, either combine this with a `cancelOrder` instant action (see
+     * `initiateInstantActions`) or ensure the AGV is no longer processing it;
+     * otherwise the master controller stops tracking a still-active order.
+     *
+     * The scope of removal is controlled by the optional parameters:
+     * - only `agvId`: remove all order caches of the AGV;
+     * - `agvId` and `orderId`: remove all order update caches with that orderId;
+     * - `agvId`, `orderId`, and `orderUpdateId`: remove that specific order cache.
+     *
+     * @param agvId identifies the AGV whose order caches should be reset
+     * @param orderId only reset caches with this orderId (optional)
+     * @param orderUpdateId only reset the cache with this orderUpdateId
+     * (optional, only considered together with `orderId`)
+     * @returns an array of `OrderInfo` snapshots for the caches that were reset
+     * (possibly empty if nothing matched)
+     */
+    cancelOrderId(agvId: AgvId, orderId?: string, orderUpdateId?: number): OrderInfo[] {
+        const orderIds = this._currentOrders.get(agvId);
+        if (orderIds === undefined) {
+            return [];
+        }
+        const head = orderIds["lastCache"] as OrderStateCache;
+
+        const targets: OrderStateCache[] = [];
+        for (const [oid, orderUpdateIds] of orderIds) {
+            if (orderId !== undefined && oid !== orderId) {
+                continue;
+            }
+            for (const [uid, cache] of orderUpdateIds) {
+                if (orderId !== undefined && orderUpdateId !== undefined && uid !== orderUpdateId) {
+                    continue;
+                }
+                targets.push(cache);
+            }
+        }
+        if (targets.length === 0) {
+            return [];
+        }
+
+        const resetInfos = targets.map(cache => this._toOrderInfo(cache, head));
+        const fallbackState = this._lastStateByAgv.get(agvId);
+
+        // Remove caches first. Keep each cache's `lastCache` link intact so that
+        // chain traversal for any surviving stitched orders still resolves older
+        // active base orders correctly (see `_getLastActiveOrderStateCache`).
+        for (const cache of targets) {
+            this._removeOrderStateCache(cache, false);
+        }
+        // Repair the per-AGV "most recently assigned" head pointer if it referred
+        // to one of the removed caches.
+        if (head !== undefined && targets.indexOf(head) !== -1) {
+            orderIds["lastCache"] = undefined;
+        }
+
+        // Release each order's terminal event handler so that awaiting logic
+        // unblocks. Done after all removals to avoid re-entrancy interleaving
+        // with cache mutation.
+        for (const cache of targets) {
+            const error = this._createResetError(cache);
+            this.debug("cancelOrderId resetting order cache %o with error %o", cache, error);
+            cache.eventHandler.onOrderProcessed(error, false, false, {
+                order: cache.order,
+                agvId: cache.agvId,
+                state: fallbackState ?? this._emptyState(cache.agvId),
+            });
+        }
+        return resetInfos;
+    }
+
+    /**
      * Whenever master controller starts up it subscribes to State topics of the
      * target AGVs configured in controller options.
      */
@@ -465,6 +654,10 @@ export class MasterController extends MasterControlClient {
     }
 
     private _dispatchState(state: State, agvId: AgvId) {
+        // Remember the most recent state per AGV so that `cancelOrderId` can
+        // provide a meaningful order event context when force-resetting caches.
+        this._lastStateByAgv.set(agvId, state);
+
         // First, check if an assigned order has been rejected with an error in the
         // first place. Note that in this case, the order is not executed and
         // state.orderId still refers to the previous order (if any). We have to
@@ -795,6 +988,62 @@ export class MasterController extends MasterControlClient {
                 this._currentOrders.delete(cache.agvId);
             }
         }
+    }
+
+    private _toOrderInfo(cache: OrderStateCache, head: OrderStateCache): OrderInfo {
+        const pendingActions: Array<{ actionId: string; actionType: string; lastStatus: ActionStatus | undefined }> = [];
+        if (cache.mappedActions !== undefined) {
+            for (const [action] of cache.mappedActions.values()) {
+                pendingActions.push({
+                    actionId: action.actionId,
+                    actionType: action.actionType,
+                    lastStatus: cache.lastActionStates?.get(action.actionId)?.actionStatus,
+                });
+            }
+        }
+        return {
+            agvId: cache.agvId,
+            orderId: cache.order.orderId,
+            orderUpdateId: cache.order.orderUpdateId,
+            lastReportedActive: cache.lastOrderProcessedIsActive,
+            isLatestAssigned: cache === head,
+            pendingActions,
+        };
+    }
+
+    private _createResetError(cache: OrderStateCache): Error {
+        return {
+            errorType: ErrorType.Order,
+            errorLevel: ErrorLevel.Warning,
+            errorDescription: "order cache reset by master controller via cancelOrderId",
+            errorReferences: [
+                { referenceKey: "topic", referenceValue: Topic.Order },
+                { referenceKey: "orderId", referenceValue: cache.order.orderId },
+                { referenceKey: "orderUpdateId", referenceValue: cache.order.orderUpdateId.toString() },
+            ],
+        };
+    }
+
+    private _emptyState(agvId: AgvId): State {
+        return {
+            headerId: 0,
+            timestamp: "",
+            version: this.clientOptions.vdaVersion,
+            manufacturer: agvId.manufacturer,
+            serialNumber: agvId.serialNumber,
+            actionStates: [],
+            batteryState: { batteryCharge: 0, charging: false },
+            driving: false,
+            edgeStates: [],
+            errors: [],
+            lastNodeId: "",
+            lastNodeSequenceId: 0,
+            nodeStates: [],
+            operatingMode: OperatingMode.Manual,
+            orderId: "",
+            orderUpdateId: 0,
+            safetyState: { eStop: EStop.None, fieldViolation: false },
+        };
     }
 
     private _getOrderStateCache(agvId: AgvId, orderId: string, orderUpdateId: number): OrderStateCache {
