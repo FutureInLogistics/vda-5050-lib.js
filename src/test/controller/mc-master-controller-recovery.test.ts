@@ -3,7 +3,7 @@
 // tslint:disable: no-empty
 
 /**
- * Master controller recovery tests for `getAllOrders` and `cancelOrderId`.
+ * Master controller recovery tests for `getAllOrders` and `discardOrderCache`.
  *
  * These cover the ability of the master controller to free itself from order
  * state caches that can no longer be completed or canceled through the regular
@@ -48,12 +48,12 @@ initTestContext(tap);
             ts.same(mcController.getAllOrders(agvId), [], "no orders tracked for AGV before assignment");
         });
 
-        await t.test("cancelOrderId on unknown AGV/order returns empty", async ts => {
-            ts.same(mcController.cancelOrderId(agvId), [], "nothing to reset for AGV without orders");
-            ts.same(mcController.cancelOrderId(agvId, "does-not-exist"), [], "nothing to reset for unknown orderId");
+        await t.test("discardOrderCache on unknown AGV/order returns empty", async ts => {
+            ts.same(mcController.discardOrderCache(agvId), [], "nothing to reset for AGV without orders");
+            ts.same(mcController.discardOrderCache(agvId, "does-not-exist"), [], "nothing to reset for unknown orderId");
         });
 
-        await t.test("getAllOrders lists an active order and cancelOrderId force-resets it",
+        await t.test("getAllOrders lists an active order and discardOrderCache force-resets it",
             ts => new Promise(async resolve => {
                 const orderId = createUuid();
                 let processedInvocations = 0;
@@ -90,14 +90,14 @@ initTestContext(tap);
                                 "getAllOrders() without filter also lists the order");
 
                             // Force-reset the order cache without any AGV interaction.
-                            const reset = mcController.cancelOrderId(agvId, orderId);
-                            ts.equal(reset.length, 1, "cancelOrderId reset exactly one order cache");
+                            const reset = mcController.discardOrderCache(agvId, orderId);
+                            ts.equal(reset.length, 1, "discardOrderCache reset exactly one order cache");
                             ts.equal(reset[0].orderId, orderId, "reset info carries orderId");
 
                             // Cache must be gone afterwards.
-                            ts.same(mcController.getAllOrders(agvId), [], "no orders tracked after cancelOrderId");
+                            ts.same(mcController.getAllOrders(agvId), [], "no orders tracked after discardOrderCache");
                         } else if (processedInvocations === 2) {
-                            // Reset invocation triggered synchronously by cancelOrderId.
+                            // Reset invocation triggered synchronously by discardOrderCache.
                             ts.not(withError, undefined, "reset: onOrderProcessed invoked with synthetic error");
                             ts.equal(withError.errorType, ErrorType.Order, "reset error has order error type");
                             ts.equal(byCancelation, false, "reset: not by AGV cancelation");
