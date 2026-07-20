@@ -310,6 +310,11 @@ export interface OrderInfo {
      * waiting on, including actions inherited from stitched-onto predecessor
      * orders, together with the last action status reported by the AGV (or
      * `undefined` if the AGV never reported a state for that action).
+     *
+     * Note that actions inherited from a stitched-onto predecessor order are
+     * listed here only once the AGV has reported its first State for the
+     * stitching order; until then, they are listed under the predecessor
+     * order's own `OrderInfo`.
      */
     readonly pendingActions: ReadonlyArray<{
         readonly actionId: string;
@@ -583,6 +588,12 @@ export class MasterController extends MasterControlClient {
      * AGV, either combine this with a `cancelOrder` instant action (see
      * `initiateInstantActions`) or ensure the AGV is no longer processing it;
      * otherwise the master controller stops tracking a still-active order.
+     *
+     * Do not immediately re-assign an order that reuses a discarded orderId and
+     * orderUpdateId: if the AGV is still reporting State messages for the
+     * discarded order, they would be dispatched onto the new order's cache and
+     * event handlers. Wait until the AGV's reported State confirms it is no
+     * longer processing that order before reusing its identifiers.
      *
      * The scope of removal is controlled by the optional parameters:
      * - only `agvId`: remove all order caches of the AGV;
@@ -860,8 +871,14 @@ export class MasterController extends MasterControlClient {
 
                 this.debug("stitching current order onto active order with combined cache %j", cache);
 
-                // Cache of last order and previous orders can be removed as all
-                // subsequent state events are emitted on the stitched order.
+                // Cache of last order can be removed as all subsequent state
+                // events are emitted on the stitched order. Re-point this cache's
+                // backward link past the merged base order beforehand: an even
+                // older order may still be tracked (e.g. if the AGV never
+                // reported a State for an intermediate stitched order) and must
+                // remain reachable for stitching on a subsequent state event
+                // instead of the chain dead-ending at the removed cache.
+                cache.lastCache = lastCache.lastCache;
                 this._removeOrderStateCache(lastCache, true);
             }
         }

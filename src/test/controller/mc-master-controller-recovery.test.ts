@@ -16,17 +16,37 @@ import * as tap from "tap";
 import {
     AgvController,
     AgvControllerOptions,
+    AgvId,
+    Client,
     createUuid,
     ErrorType,
+    Headerless,
     MasterController,
+    Topic,
+    TopicObject,
     VirtualAgvAdapter,
     VirtualAgvAdapterOptions,
 } from "../..";
 
 import { initTestContext, testClientOptions } from "../test-context";
-import { createAgvId } from "../test-objects";
+import { createAgvId, createHeaderlessObject } from "../test-objects";
 
 initTestContext(tap);
+
+/**
+ * A bare client used to publish hand-crafted State messages on behalf of an
+ * AGV, so that tests can simulate state event sequences a real (virtual) AGV
+ * controller would never produce.
+ */
+class RawAgvStateClient extends Client {
+
+    publish<T extends string>(
+        topic: T extends Topic ? T : string,
+        subject: AgvId,
+        object: Headerless<TopicObject<T>>) {
+        return this.publishTopic(topic, subject, object);
+    }
+}
 
 (async () => {
     await tap.test("Master Controller order cache recovery", async t => {
@@ -112,5 +132,95 @@ initTestContext(tap);
                     },
                 });
             }));
+    });
+
+    await tap.test("Master Controller stitching chain survives skipped state events", async t => {
+        // Regression test: when a stitching order's first state event merges and
+        // removes its (nearest still-tracked) base order cache, the backward
+        // `lastCache` chain must be re-linked past the removed cache. Otherwise,
+        // an older order that is still tracked because the AGV never reported a
+        // State for the intermediate stitched order becomes unreachable and its
+        // cache is retained forever.
+        const agvId = createAgvId("RobotCompany", "R02");
+
+        const mcController = new MasterController(testClientOptions(t), {});
+        // No AGV controller: states are hand-crafted so that the AGV appears to
+        // skip state events for intermediate stitched orders.
+        const agvClient = new RawAgvStateClient(testClientOptions(t));
+
+        t.teardown(() => agvClient.stop());
+        t.teardown(() => mcController.stop());
+
+        await t.test("start Master Controller", () => mcController.start());
+        await t.test("start raw AGV state client", () => agvClient.start());
+
+        // One released base node, one horizon node, one unreleased edge: the
+        // order never completes on its own and triggers no edge events.
+        const createOrder = (orderId: string, tag: string) => ({
+            orderId,
+            orderUpdateId: 0,
+            nodes: [
+                { nodeId: `${tag}1`, sequenceId: 0, released: true, actions: [] },
+                { nodeId: `${tag}2`, sequenceId: 2, released: false, nodePosition: { x: 10, y: 0, mapId: "local" }, actions: [] },
+            ],
+            edges: [
+                { edgeId: `${tag}e`, sequenceId: 1, startNodeId: `${tag}1`, endNodeId: `${tag}2`, released: false, actions: [] },
+            ],
+        });
+
+        const orderIdA = createUuid();
+        const orderIdB = createUuid();
+        const orderIdC = createUuid();
+
+        let stateUpdates = 0;
+        let awaitStateUpdate: () => void;
+
+        await t.test("assign three stitched orders without any AGV state", async ts => {
+            await mcController.assignOrder(agvId, createOrder(orderIdA, "a"), { onOrderProcessed: () => { } });
+            await mcController.assignOrder(agvId, createOrder(orderIdB, "b"), { onOrderProcessed: () => { } });
+            await mcController.assignOrder(agvId, createOrder(orderIdC, "c"), {
+                onOrderProcessed: () => { },
+                onStateUpdate: () => {
+                    stateUpdates++;
+                    awaitStateUpdate?.();
+                },
+            });
+            ts.same(mcController.getAllOrders(agvId).map(o => o.orderId).sort(),
+                [orderIdA, orderIdB, orderIdC].sort(), "all three orders tracked");
+        });
+
+        // A State reported for the newest order only, i.e. the AGV skips state
+        // events for the intermediate stitched orders. Released node states keep
+        // the order active so that no terminal event is emitted.
+        const publishStateForNewestOrder = async () => {
+            const numUpdates = stateUpdates;
+            const stateReceived = new Promise<void>(resolve => awaitStateUpdate = resolve);
+            await agvClient.publish(Topic.State, agvId, {
+                ...createHeaderlessObject(Topic.State),
+                orderId: orderIdC,
+                orderUpdateId: 0,
+                nodeStates: [
+                    { nodeId: "a1", sequenceId: 0, released: true },
+                    { nodeId: "b1", sequenceId: 0, released: true },
+                    { nodeId: "c1", sequenceId: 0, released: true },
+                ],
+            });
+            await stateReceived;
+            return numUpdates + 1;
+        };
+
+        await t.test("first state event on newest order merges nearest tracked base order", async ts => {
+            const expectedUpdates = await publishStateForNewestOrder();
+            ts.equal(stateUpdates, expectedUpdates, "state dispatched on newest order");
+            ts.same(mcController.getAllOrders(agvId).map(o => o.orderId).sort(),
+                [orderIdA, orderIdC].sort(), "intermediate order merged and removed, oldest order still tracked");
+        });
+
+        await t.test("next state event still reaches the oldest order across the removed cache", async ts => {
+            const expectedUpdates = await publishStateForNewestOrder();
+            ts.equal(stateUpdates, expectedUpdates, "state dispatched on newest order");
+            ts.same(mcController.getAllOrders(agvId).map(o => o.orderId),
+                [orderIdC], "oldest order merged and removed via re-linked chain");
+        });
     });
 })();
