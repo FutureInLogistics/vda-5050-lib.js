@@ -279,7 +279,7 @@ export interface VirtualAgvAdapterOptions extends AgvAdapterOptions {
 
     /**
      * Specifies the AGV's normal deviation x/y tolerance (in meter) if no
-     * deviation is allowed, i.e. if `NodePosition.allowedDeviationXy` is 0 or
+     * deviation is allowed, i.e. if `NodePosition.allowedDeviationXY` is 0 or
      * not specified.
      *
      * If not specified, value defaults to 0.5 meter.
@@ -657,15 +657,15 @@ export class VirtualAgvAdapter implements AgvAdapter {
             // knowing the current position of the AGV is accepted.
             return errorRefs;
         }
-        const { allowedDeviationTheta, allowedDeviationXy, mapId, theta, x, y } = node.nodePosition;
+        const { allowedDeviationTheta, allowedDeviationXY, mapId, theta, x, y } = node.nodePosition;
         const { mapId: agvMapId, theta: agvTheta, x: agvX, y: agvY } = this._vehicleState.position;
         if (mapId !== agvMapId) {
             errorRefs.push({ referenceKey: "nodeId", referenceValue: node.nodeId });
             errorRefs.push({ referenceKey: "nodePosition.mapId", referenceValue: agvMapId });
         }
-        const allowedXy = allowedDeviationXy || this.options.agvNormalDeviationXyTolerance;
+        const allowedXy = allowedDeviationXY || this.options.agvNormalDeviationXyTolerance;
         if ((agvX - x) ** 2 + (agvY - y) ** 2 > allowedXy ** 2) {
-            errorRefs.push({ referenceKey: "nodePosition.allowedDeviationXy", referenceValue: allowedXy.toString() });
+            errorRefs.push({ referenceKey: "nodePosition.allowedDeviationXY", referenceValue: allowedXy.toString() });
         }
         if (theta === undefined) {
             // Vehicle can plan the path by itself.

@@ -502,7 +502,7 @@ export interface AgvAdapter {
      *
      * The handler function should return an array of error references if the
      * node is not within the deviation range by checking the node properties x,
-     * y, theta, mapId, allowedDeviationTheta, and allowedDeviationXy against
+     * y, theta, mapId, allowedDeviationTheta, and allowedDeviationXY against
      * the current AGV position. Otherwise, the handler should return an empty
      * array or `undefined`.
      *
