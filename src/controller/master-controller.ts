@@ -576,9 +576,11 @@ export class MasterController extends MasterControlClient {
      * AGV no longer reports the corresponding node/edge/action states.
      *
      * For each affected order cache, the registered `onOrderProcessed` handler is
-     * invoked once with a synthetic reset error (`withError`), `byCancelation`
-     * false, and `active` false, so that application logic awaiting order
-     * termination is released. As the reset happens without any AGV interaction,
+     * invoked once with a synthetic reset error (`withError`) of error type
+     * `ErrorType.OrderCacheReset`, `byCancelation` false, and `active` false, so
+     * that application logic awaiting order termination is released. Match on
+     * that error type to distinguish a local cache reset from an order the AGV
+     * itself failed. As the reset happens without any AGV interaction,
      * the order context passed to the handler carries a synthetic empty State
      * object (not a State reported by the AGV); in particular, the reset error is
      * not contained in `state.errors`. Afterwards, the cache is discarded.
@@ -1068,7 +1070,7 @@ export class MasterController extends MasterControlClient {
 
     private _createResetError(cache: OrderStateCache): Error {
         return {
-            errorType: ErrorType.Order,
+            errorType: ErrorType.OrderCacheReset,
             errorLevel: ErrorLevel.Warning,
             errorDescription: "order cache reset by master controller via discardOrderCache",
             errorReferences: [
