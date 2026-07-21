@@ -1453,13 +1453,13 @@ const ref2 = function validate(data) {
       return false
     }
   }
-  if ("allowedDeviationXy" in data && hasOwn(data, "allowedDeviationXy")) {
-    if (!(typeof data.allowedDeviationXy === "number")) {
-      validate.errors = [{ keywordLocation: "#/properties/allowedDeviationXy/type", instanceLocation: "#/allowedDeviationXy" }]
+  if ("allowedDeviationXY" in data && hasOwn(data, "allowedDeviationXY")) {
+    if (!(typeof data.allowedDeviationXY === "number")) {
+      validate.errors = [{ keywordLocation: "#/properties/allowedDeviationXY/type", instanceLocation: "#/allowedDeviationXY" }]
       return false
     }
-    if (!(0 <= data.allowedDeviationXy)) {
-      validate.errors = [{ keywordLocation: "#/properties/allowedDeviationXy/minimum", instanceLocation: "#/allowedDeviationXy" }]
+    if (!(0 <= data.allowedDeviationXY)) {
+      validate.errors = [{ keywordLocation: "#/properties/allowedDeviationXY/minimum", instanceLocation: "#/allowedDeviationXY" }]
       return false
     }
   }
@@ -2080,13 +2080,13 @@ const ref2 = function validate(data) {
       return false
     }
   }
-  if ("allowedDeviationXy" in data && hasOwn(data, "allowedDeviationXy")) {
-    if (!(typeof data.allowedDeviationXy === "number")) {
-      validate.errors = [{ keywordLocation: "#/properties/allowedDeviationXy/type", instanceLocation: "#/allowedDeviationXy" }]
+  if ("allowedDeviationXY" in data && hasOwn(data, "allowedDeviationXY")) {
+    if (!(typeof data.allowedDeviationXY === "number")) {
+      validate.errors = [{ keywordLocation: "#/properties/allowedDeviationXY/type", instanceLocation: "#/allowedDeviationXY" }]
       return false
     }
-    if (!(0 <= data.allowedDeviationXy)) {
-      validate.errors = [{ keywordLocation: "#/properties/allowedDeviationXy/minimum", instanceLocation: "#/allowedDeviationXy" }]
+    if (!(0 <= data.allowedDeviationXY)) {
+      validate.errors = [{ keywordLocation: "#/properties/allowedDeviationXY/minimum", instanceLocation: "#/allowedDeviationXY" }]
       return false
     }
   }
