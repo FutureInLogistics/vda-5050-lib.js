@@ -242,6 +242,7 @@ export enum ErrorType {
     InstantAction = "instantActionError",
     InstantActionValidation = "validationError",
     InstantActionNoOrderToCancel = "noOrderToCancel",
+    OrderCacheReset = "orderCacheResetError",
 }
 
 /**

@@ -119,7 +119,7 @@ class RawAgvStateClient extends Client {
                         } else if (processedInvocations === 2) {
                             // Reset invocation triggered synchronously by discardOrderCache.
                             ts.not(withError, undefined, "reset: onOrderProcessed invoked with synthetic error");
-                            ts.equal(withError.errorType, ErrorType.Order, "reset error has order error type");
+                            ts.equal(withError.errorType, ErrorType.OrderCacheReset, "reset error has order cache reset error type");
                             ts.equal(byCancelation, false, "reset: not by AGV cancelation");
                             ts.equal(active, false, "reset: order reported inactive");
                             ts.equal(context.order.orderId, orderId, "reset context carries the order");
