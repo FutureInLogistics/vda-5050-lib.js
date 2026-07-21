@@ -1148,7 +1148,7 @@ export interface NodePosition {
      * If > 0: allowed deviation-radius in meters. If the AGV passes a node within the
      * deviation-radius, the node is considered to have been traversed.
      */
-    allowedDeviationXy?: number;
+    allowedDeviationXY?: number;
     /**
      * Verbose description of the Map
      */

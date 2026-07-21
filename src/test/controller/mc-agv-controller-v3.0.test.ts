@@ -749,7 +749,7 @@ initTestContext(tap);
             undefined,
             undefined,
             { referenceKey: "nodeId", referenceValue: "n1" },
-            { referenceKey: "nodePosition.allowedDeviationXy", referenceValue: "0.5" },
+            { referenceKey: "nodePosition.allowedDeviationXY", referenceValue: "0.5" },
             { referenceKey: "orderUpdateId", referenceValue: "0" },
         );
 
