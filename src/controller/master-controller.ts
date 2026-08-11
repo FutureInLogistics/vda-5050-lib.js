@@ -22,7 +22,21 @@ import {
     Order,
     State,
     Topic,
+    V3_0,
 } from "..";
+
+// Error levels that always fail an order regardless of type. Every other level
+// (WARNING, URGENT, unknown) is non-terminal by level.
+const TERMINAL_ERROR_LEVELS = new Set<string>([ErrorLevel.Fatal, V3_0.ErrorLevel.Critical]);
+
+// Spec order-rejection error types that always fail an order despite their
+// WARNING level.
+const ORDER_FAILING_ERROR_TYPES = new Set<string>([
+    ErrorType.Order,
+    ErrorType.OrderUpdate,
+    ErrorType.OrderNoRoute,
+    ErrorType.OrderValidation,
+]);
 
 /**
  * Represents context information of an order event.
@@ -722,6 +736,18 @@ export class MasterController extends MasterControlClient {
                 // action (with ErrorType.OrderAction).
                 continue;
             }
+            if (!TERMINAL_ERROR_LEVELS.has(error.errorLevel) &&
+                !ORDER_FAILING_ERROR_TYPES.has(error.errorType)) {
+                // Not order-failing: neither a terminal level (FATAL/CRITICAL)
+                // nor a spec order-rejection type. Never terminates the order,
+                // even when it references the order; leaves it running (e.g.
+                // WARNING-level health warnings).
+                continue;
+            }
+            // This loop handles terminal order rejections. Only order-failing
+            // errors (see ORDER_FAILING_ERROR_TYPES / TERMINAL_ERROR_LEVELS)
+            // reach this point; such an error terminates its referenced order,
+            // or — when order-less — the last assigned order.
             if (orderId !== undefined && orderUpdateId !== undefined) {
                 cache = this._getOrderStateCache(agvId, orderId, orderUpdateId);
             } else if (topic === Topic.Order && error.errorType === ErrorType.OrderValidation) {
@@ -736,7 +762,11 @@ export class MasterController extends MasterControlClient {
                 // outbound topic objects with master controller client option
                 // "topicObjectValidation" (default is true).
             } else if (orderId === undefined) {
-                // In case that there are no orderId in the error references, get the last assigned order from cache
+                // No orderId in the error references: attribute this order-failing
+                // rejection to the last assigned order. The gate above already
+                // excluded non-order-failing errors (e.g. WARNING-level health
+                // warnings), so an order-less error reaching here is a genuine
+                // rejection (by terminal level or order-failing type).
                 cache = this._getLastAssignedOrderStateCache(agvId);
             }
             if (cache !== undefined) {
