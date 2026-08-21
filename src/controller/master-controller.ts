@@ -734,26 +734,10 @@ export class MasterController extends MasterControlClient {
             if (!ORDER_FAILING_ERROR_TYPES.has(error.errorType)) {
                 continue;
             }
-            // Spec order-rejection types only. Terminates the referenced order,
-            // or — when order-less — the last assigned order.
-            if (orderId !== undefined && orderUpdateId !== undefined) {
-                cache = this._getOrderStateCache(agvId, orderId, orderUpdateId);
-            } else if (topic === Topic.Order && error.errorType === ErrorType.OrderValidation) {
-                // In case a validation error occurs where no orderId and
-                // orderUpdateId can be extracted from the invalid order object
-                // we cannot reliably determine the corresponding order assigned
-                // by the master controller. Note that in case of stitching
-                // orders it might not be always the order assigned most
-                // recently for the given agvId.
-                //
-                // To prevent such cases, it is recommended to always validate
-                // outbound topic objects with master controller client option
-                // "topicObjectValidation" (default is true).
-            } else if (orderId === undefined) {
-                // No orderId in the error references: attribute this rejection
-                // type to the last assigned order.
-                cache = this._getLastAssignedOrderStateCache(agvId);
+            if (orderId === undefined || orderUpdateId === undefined) {
+                continue;
             }
+            cache = this._getOrderStateCache(agvId, orderId, orderUpdateId);
             if (cache !== undefined) {
                 // Clear cache entry to support follow-up assignment of an order
                 // with same orderId and orderUpdateId. Keep lastCache to
