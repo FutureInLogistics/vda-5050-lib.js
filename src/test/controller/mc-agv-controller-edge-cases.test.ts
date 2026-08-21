@@ -531,6 +531,77 @@ initTestContext(tap);
         );
 
         /* ------------------------------------------------------------------ */
+        /* FATAL health errors must not terminate an in-flight order           */
+        /* ------------------------------------------------------------------ */
+
+        const fatalHealthOrderLess = {
+            orderId: createUuid(),
+            orderUpdateId: 0,
+            nodes: [
+                { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+                { nodeId: "n2", sequenceId: 2, released: true, nodePosition: { x: 10, y: 0, mapId: "local" }, actions: [] },
+            ],
+            edges: [
+                { edgeId: "e12", sequenceId: 1, startNodeId: "n1", endNodeId: "n2", released: true, actions: [] },
+            ],
+        };
+
+        await testOrder(t, "FATAL health error without orderId does not terminate the active order",
+            mcController,
+            agvId1,
+            fatalHealthOrderLess,
+            {
+                completes: true,
+                triggerOnEdgeTraversing: () => {
+                    agvController1.updatePartialState({
+                        errors: [{
+                            errorType: "LOCALIZATION_ERROR",
+                            errorLevel: ErrorLevel.Fatal,
+                            errorDescription: "lost localization",
+                            errorReferences: [],
+                        }],
+                    }, true);
+                },
+            },
+        );
+
+        const fatalHealthOrderReferenced = {
+            orderId: createUuid(),
+            orderUpdateId: 0,
+            nodes: [
+                { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+                { nodeId: "n2", sequenceId: 2, released: true, nodePosition: { x: 10, y: 0, mapId: "local" }, actions: [] },
+            ],
+            edges: [
+                { edgeId: "e12", sequenceId: 1, startNodeId: "n1", endNodeId: "n2", released: true, actions: [] },
+            ],
+        };
+
+        await testOrder(t, "FATAL health error referencing the order does not terminate it",
+            mcController,
+            agvId1,
+            fatalHealthOrderReferenced,
+            {
+                completes: true,
+                triggerOnEdgeTraversing: () => {
+                    agvController1.updatePartialState({
+                        errors: [{
+                            errorType: "LOCALIZATION_ERROR",
+                            errorLevel: ErrorLevel.Fatal,
+                            errorDescription: "lost localization",
+                            errorReferences: [
+                                { referenceKey: "orderId", referenceValue: fatalHealthOrderReferenced.orderId },
+                                { referenceKey: "orderUpdateId", referenceValue: "0" },
+                            ],
+                        }],
+                    }, true);
+                },
+            },
+        );
+
+        agvController1.updatePartialState({ errors: [] }, true);
+
+        /* ------------------------------------------------------------------ */
         /* FR-14: Multiple instant actions in one request                      */
         /* ------------------------------------------------------------------ */
 
