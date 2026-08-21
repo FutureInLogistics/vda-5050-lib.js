@@ -957,12 +957,18 @@ export class MasterController extends MasterControlClient {
             return;
         }
 
+        // Latch a finished cancelOrder as soon as it appears: the AGV reports it
+        // one or more frames before the order derives as processed, so the
+        // terminal transition below can no longer observe it directly.
+        cache.canceled = cache.canceled ||
+            this._isOrderCanceling(cache, state, [ActionStatus.Finished]);
+
         // Check if order has been processed successfully or has been canceled
         // by instant action "cancelOrder".
         const result = this._isOrderProcessed(cache, state);
         const isActive = result === undefined;
         if (result !== false && cache.lastOrderProcessedIsActive !== isActive) {
-            const byCancelation = this._isOrderCanceling(cache, state, [ActionStatus.Finished]);
+            const byCancelation = cache.canceled;
             if (byCancelation) {
                 this.debug("onOrderProcessed by cancelation in state active=%s", isActive);
             } else {
@@ -989,6 +995,7 @@ export class MasterController extends MasterControlClient {
             order: order,
             eventHandler,
             lastOrderProcessedIsActive: null,
+            canceled: false,
             lastCache: this._getLastAssignedOrderStateCache(agvId),
             combinedOrder: {
                 edges: [...order.edges],
@@ -1392,6 +1399,12 @@ interface OrderStateCache {
     // Using a nullable value (instead of a boolean flag) allows re-invocation when isActive changes,
     // e.g. when a cancelOrder instant action transitions isActive back to true after it was false.
     lastOrderProcessedIsActive: boolean | null;
+
+    // Latched once a cancelOrder instant action is observed finished on any state
+    // frame. The AGV reports the cancel before the order derives as processed, so
+    // sampling it only at the terminal transition would miss it; latching keeps
+    // byCancelation correct in the terminal onOrderProcessed event.
+    canceled: boolean;
 
     // Latest order statze cache assigned for the given agvId or undefined (used
     // for handling stitching orders).
