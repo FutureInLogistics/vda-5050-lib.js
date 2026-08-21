@@ -24,9 +24,10 @@ import {
     Topic,
 } from "..";
 
-// Spec order-rejection error types. Only these fail an order; error level
-// (WARNING, FATAL, CRITICAL, URGENT) never does.
-const ORDER_FAILING_ERROR_TYPES = new Set<string>([
+// VDA 5050 2.1 section 6.6.4 defines orderError, orderUpdateError, and
+// validationError as order rejections. This library also emits noRouteError
+// when rejecting an order whose route is not traversable.
+const ORDER_REJECTION_ERROR_TYPES = new Set<string>([
     ErrorType.Order,
     ErrorType.OrderUpdate,
     ErrorType.OrderNoRoute,
@@ -359,8 +360,6 @@ export class MasterController extends MasterControlClient {
 
     // Order state caches mapped by agvId, orderId, orderUpdateId.
     private readonly _currentOrders: AgvIdMap<Map<string, Map<number, OrderStateCache>>> = new AgvIdMap();
-
-    private readonly _lastReportedOrders: AgvIdMap<{ orderId: string; orderUpdateId: number }> = new AgvIdMap();
 
     // Instant action state caches mapped by agvId, actionId.
     private readonly _currentInstantActions: AgvIdMap<Map<string, InstantActionStateCache>> = new AgvIdMap();
@@ -698,14 +697,7 @@ export class MasterController extends MasterControlClient {
     }
 
     private _dispatchState(state: State, agvId: AgvId) {
-        this._lastReportedOrders.set(agvId, {
-            orderId: state.orderId,
-            orderUpdateId: state.orderUpdateId,
-        });
         const orderStateCache = this._getOrderStateCache(agvId, state.orderId, state.orderUpdateId);
-        if (orderStateCache !== undefined) {
-            orderStateCache.hasBeenAcknowledged = true;
-        }
 
         // First, check if an assigned order has been rejected with an error in the
         // first place. Note that in this case, the order is not executed and
@@ -730,7 +722,12 @@ export class MasterController extends MasterControlClient {
                         orderId = errorRef.referenceValue;
                     }
                     if (errorRef.referenceKey === "orderUpdateId") {
-                        orderUpdateId = parseInt(errorRef.referenceValue, 10);
+                        const parsedOrderUpdateId = Number(errorRef.referenceValue);
+                        if (Number.isSafeInteger(parsedOrderUpdateId) &&
+                            parsedOrderUpdateId >= 0 &&
+                            parsedOrderUpdateId.toString() === errorRef.referenceValue) {
+                            orderUpdateId = parsedOrderUpdateId;
+                        }
                     }
                 }
             }
@@ -742,14 +739,15 @@ export class MasterController extends MasterControlClient {
                 // action (with ErrorType.OrderAction).
                 continue;
             }
-            if (!ORDER_FAILING_ERROR_TYPES.has(error.errorType)) {
+            if (!ORDER_REJECTION_ERROR_TYPES.has(error.errorType)) {
                 continue;
             }
             if (orderId === undefined || orderUpdateId === undefined) {
                 continue;
             }
             cache = this._getOrderStateCache(agvId, orderId, orderUpdateId);
-            if (cache !== undefined && !cache.hasBeenAcknowledged) {
+            const isOrderAcknowledged = state.orderId === orderId && state.orderUpdateId === orderUpdateId;
+            if (cache !== undefined && !isOrderAcknowledged) {
                 // Clear cache entry to support follow-up assignment of an order
                 // with same orderId and orderUpdateId. Keep lastCache to
                 // support stitching orders after rejected stitching orders.
@@ -991,14 +989,11 @@ export class MasterController extends MasterControlClient {
     }
 
     private _addOrderStateCache(agvId: AgvId, order: Headerless<Order>, eventHandler: OrderEventHandler) {
-        const lastReportedOrder = this._lastReportedOrders.get(agvId);
         const cache: OrderStateCache = {
             agvId,
             order: order,
             eventHandler,
             lastOrderProcessedIsActive: null,
-            hasBeenAcknowledged: lastReportedOrder?.orderId === order.orderId &&
-                lastReportedOrder.orderUpdateId === order.orderUpdateId,
             lastCache: this._getLastAssignedOrderStateCache(agvId),
             combinedOrder: {
                 edges: [...order.edges],
@@ -1048,9 +1043,8 @@ export class MasterController extends MasterControlClient {
         // to the removed cache: re-point it to the most recent predecessor that
         // is still being tracked (resolved like order stitching does, see
         // `_getLastActiveOrderStateCache`). This keeps introspection
-        // (`OrderInfo.isLatestAssigned`), attribution of order errors without
-        // order references, and stitching of subsequently assigned orders
-        // resolving to a tracked cache instead of a removed one.
+        // (`OrderInfo.isLatestAssigned`) and stitching of subsequently assigned
+        // orders resolving to a tracked cache instead of a removed one.
         if (orderIds["lastCache"] === cache) {
             orderIds["lastCache"] = cache.lastCache === undefined ? undefined : this._getLastActiveOrderStateCache(cache);
         }
@@ -1403,8 +1397,6 @@ interface OrderStateCache {
     // Using a nullable value (instead of a boolean flag) allows re-invocation when isActive changes,
     // e.g. when a cancelOrder instant action transitions isActive back to true after it was false.
     lastOrderProcessedIsActive: boolean | null;
-
-    hasBeenAcknowledged: boolean;
 
     // Latest order statze cache assigned for the given agvId or undefined (used
     // for handling stitching orders).

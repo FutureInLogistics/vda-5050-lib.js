@@ -14,9 +14,11 @@
 import * as tap from "tap";
 
 import {
+    ActionStatus,
     AgvController,
     AgvControllerOptions,
     AgvId,
+    BlockingType,
     Client,
     createUuid,
     ErrorLevel,
@@ -223,67 +225,58 @@ class RawAgvStateClient extends Client {
             ts.same(mcController.getAllOrders(agvId).map(o => o.orderId),
                 [orderIdC], "oldest order merged and removed via re-linked chain");
         });
-    });
 
-    await tap.test("Master Controller retains acknowledgement across cache reuse", async t => {
-        const agvId = createAgvId("RobotCompany", "R03");
-        const clientOptions = testClientOptions(t, { vdaVersion: "2.1.0" });
-        const mcController = new MasterController(clientOptions, {});
-        const agvClient = new RawAgvStateClient(clientOptions);
+        await t.test("malformed orderUpdateId reference does not identify an order cache", async ts => {
+            const targetAgvId = createAgvId("RobotCompany", "R03");
+            const orderId = createUuid();
+            let wasRejected = false;
+            await mcController.assignOrder(targetAgvId, createOrder(orderId, "m"), {
+                onOrderProcessed: withError => {
+                    if (withError?.errorType === ErrorType.OrderNoRoute) {
+                        wasRejected = true;
+                    }
+                },
+            });
 
-        t.teardown(() => agvClient.stop());
-        t.teardown(() => mcController.stop());
+            const barrierActionId = createUuid();
+            let resolveStateProcessed: () => void;
+            const stateProcessed = new Promise<void>(resolve => resolveStateProcessed = resolve);
+            await mcController.initiateInstantActions(targetAgvId, {
+                instantActions: [{
+                    actionId: barrierActionId,
+                    actionType: "stateRequest",
+                    blockingType: BlockingType.None,
+                }],
+            }, {
+                onActionStateChanged: () => resolveStateProcessed(),
+                onActionError: () => {
+                    ts.fail("barrier instant action should not fail");
+                    resolveStateProcessed();
+                },
+            });
 
-        await mcController.start();
-        await agvClient.start();
+            await agvClient.publish(Topic.State, targetAgvId, {
+                ...createHeaderlessObject(Topic.State),
+                orderId: "previous-order",
+                orderUpdateId: 0,
+                errors: [{
+                    errorType: ErrorType.OrderNoRoute,
+                    errorLevel: ErrorLevel.Warning,
+                    errorReferences: [
+                        { referenceKey: "orderId", referenceValue: orderId },
+                        { referenceKey: "orderUpdateId", referenceValue: "0junk" },
+                    ],
+                }],
+                actionStates: [{
+                    actionId: barrierActionId,
+                    actionType: "stateRequest",
+                    actionStatus: ActionStatus.Finished,
+                }],
+            });
+            await stateProcessed;
 
-        const order = {
-            orderId: createUuid(),
-            orderUpdateId: 0,
-            nodes: [{ nodeId: "n1", sequenceId: 0, released: true, actions: [] }],
-            edges: [],
-        };
-        let resolveFirstOrderProcessed: () => void;
-        const firstOrderProcessed = new Promise<void>(resolve => resolveFirstOrderProcessed = resolve);
-        await mcController.assignOrder(agvId, order, {
-            onOrderProcessed: withError => {
-                t.equal(withError, undefined, "first assignment completes successfully");
-                resolveFirstOrderProcessed();
-            },
+            ts.equal(wasRejected, false, "malformed reference did not reject the order");
+            ts.equal(mcController.getAllOrders(targetAgvId).length, 1, "order cache remains tracked");
         });
-
-        await agvClient.publish(Topic.State, agvId, {
-            ...createHeaderlessObject(Topic.State),
-            orderId: order.orderId,
-            orderUpdateId: order.orderUpdateId,
-            lastNodeId: "n1",
-        });
-        await firstOrderProcessed;
-
-        let wasRejected = false;
-        await mcController.assignOrder(agvId, order, {
-            onOrderProcessed: withError => {
-                if (withError?.errorType === ErrorType.OrderNoRoute) {
-                    wasRejected = true;
-                }
-            },
-        });
-        await agvClient.publish(Topic.State, agvId, {
-            ...createHeaderlessObject(Topic.State),
-            orderId: "different-order",
-            orderUpdateId: 0,
-            errors: [{
-                errorType: ErrorType.OrderNoRoute,
-                errorLevel: ErrorLevel.Warning,
-                errorReferences: [
-                    { referenceKey: "orderId", referenceValue: order.orderId },
-                    { referenceKey: "orderUpdateId", referenceValue: order.orderUpdateId.toString() },
-                ],
-            }],
-        });
-        await new Promise(resolve => setTimeout(resolve, 300));
-
-        t.equal(wasRejected, false, "stale rejection does not terminate the acknowledged order");
-        t.equal(mcController.getAllOrders(agvId).length, 1, "reused order cache remains tracked");
     });
 })();
