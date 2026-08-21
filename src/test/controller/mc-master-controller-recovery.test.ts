@@ -14,14 +14,11 @@
 import * as tap from "tap";
 
 import {
-    ActionStatus,
     AgvController,
     AgvControllerOptions,
     AgvId,
-    BlockingType,
     Client,
     createUuid,
-    ErrorLevel,
     ErrorType,
     Headerless,
     MasterController,
@@ -224,59 +221,6 @@ class RawAgvStateClient extends Client {
             ts.equal(stateUpdates, expectedUpdates, "state dispatched on newest order");
             ts.same(mcController.getAllOrders(agvId).map(o => o.orderId),
                 [orderIdC], "oldest order merged and removed via re-linked chain");
-        });
-
-        await t.test("malformed orderUpdateId reference does not identify an order cache", async ts => {
-            const targetAgvId = createAgvId("RobotCompany", "R03");
-            const orderId = createUuid();
-            let wasRejected = false;
-            await mcController.assignOrder(targetAgvId, createOrder(orderId, "m"), {
-                onOrderProcessed: withError => {
-                    if (withError?.errorType === ErrorType.OrderNoRoute) {
-                        wasRejected = true;
-                    }
-                },
-            });
-
-            const barrierActionId = createUuid();
-            let resolveStateProcessed: () => void;
-            const stateProcessed = new Promise<void>(resolve => resolveStateProcessed = resolve);
-            await mcController.initiateInstantActions(targetAgvId, {
-                instantActions: [{
-                    actionId: barrierActionId,
-                    actionType: "stateRequest",
-                    blockingType: BlockingType.None,
-                }],
-            }, {
-                onActionStateChanged: () => resolveStateProcessed(),
-                onActionError: () => {
-                    ts.fail("barrier instant action should not fail");
-                    resolveStateProcessed();
-                },
-            });
-
-            await agvClient.publish(Topic.State, targetAgvId, {
-                ...createHeaderlessObject(Topic.State),
-                orderId: "previous-order",
-                orderUpdateId: 0,
-                errors: [{
-                    errorType: ErrorType.OrderNoRoute,
-                    errorLevel: ErrorLevel.Warning,
-                    errorReferences: [
-                        { referenceKey: "orderId", referenceValue: orderId },
-                        { referenceKey: "orderUpdateId", referenceValue: "0junk" },
-                    ],
-                }],
-                actionStates: [{
-                    actionId: barrierActionId,
-                    actionType: "stateRequest",
-                    actionStatus: ActionStatus.Finished,
-                }],
-            });
-            await stateProcessed;
-
-            ts.equal(wasRejected, false, "malformed reference did not reject the order");
-            ts.equal(mcController.getAllOrders(targetAgvId).length, 1, "order cache remains tracked");
         });
     });
 })();

@@ -722,12 +722,7 @@ export class MasterController extends MasterControlClient {
                         orderId = errorRef.referenceValue;
                     }
                     if (errorRef.referenceKey === "orderUpdateId") {
-                        const parsedOrderUpdateId = Number(errorRef.referenceValue);
-                        if (Number.isSafeInteger(parsedOrderUpdateId) &&
-                            parsedOrderUpdateId >= 0 &&
-                            parsedOrderUpdateId.toString() === errorRef.referenceValue) {
-                            orderUpdateId = parsedOrderUpdateId;
-                        }
+                        orderUpdateId = parseInt(errorRef.referenceValue, 10);
                     }
                 }
             }
