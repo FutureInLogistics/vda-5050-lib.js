@@ -696,6 +696,11 @@ export class MasterController extends MasterControlClient {
     }
 
     private _dispatchState(state: State, agvId: AgvId) {
+        const orderStateCache = this._getOrderStateCache(agvId, state.orderId, state.orderUpdateId);
+        if (orderStateCache !== undefined) {
+            orderStateCache.hasBeenAcknowledged = true;
+        }
+
         // First, check if an assigned order has been rejected with an error in the
         // first place. Note that in this case, the order is not executed and
         // state.orderId still refers to the previous order (if any). We have to
@@ -738,7 +743,7 @@ export class MasterController extends MasterControlClient {
                 continue;
             }
             cache = this._getOrderStateCache(agvId, orderId, orderUpdateId);
-            if (cache !== undefined) {
+            if (cache !== undefined && !cache.hasBeenAcknowledged) {
                 // Clear cache entry to support follow-up assignment of an order
                 // with same orderId and orderUpdateId. Keep lastCache to
                 // support stitching orders after rejected stitching orders.
@@ -751,7 +756,6 @@ export class MasterController extends MasterControlClient {
         // Then, try to dispatch active order/action state and errors. Do it before
         // dispatching instant action states so that instant action state related to
         // this order is still present (cp. cancelOrder).
-        const orderStateCache = this._getOrderStateCache(agvId, state.orderId, state.orderUpdateId);
         if (orderStateCache) {
             this._dispatchOrderState(state, orderStateCache);
         }
@@ -986,6 +990,7 @@ export class MasterController extends MasterControlClient {
             order: order,
             eventHandler,
             lastOrderProcessedIsActive: null,
+            hasBeenAcknowledged: false,
             lastCache: this._getLastAssignedOrderStateCache(agvId),
             combinedOrder: {
                 edges: [...order.edges],
@@ -1390,6 +1395,8 @@ interface OrderStateCache {
     // Using a nullable value (instead of a boolean flag) allows re-invocation when isActive changes,
     // e.g. when a cancelOrder instant action transitions isActive back to true after it was false.
     lastOrderProcessedIsActive: boolean | null;
+
+    hasBeenAcknowledged: boolean;
 
     // Latest order statze cache assigned for the given agvId or undefined (used
     // for handling stitching orders).

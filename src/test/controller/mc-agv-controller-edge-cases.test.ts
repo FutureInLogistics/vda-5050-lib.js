@@ -630,6 +630,40 @@ initTestContext(tap);
             },
         );
 
+        const acknowledgedOrderWithRejectionError = {
+            orderId: createUuid(),
+            orderUpdateId: 0,
+            nodes: [
+                { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+                { nodeId: "n2", sequenceId: 2, released: true, nodePosition: { x: 10, y: 0, mapId: "local" }, actions: [] },
+            ],
+            edges: [
+                { edgeId: "e12", sequenceId: 1, startNodeId: "n1", endNodeId: "n2", released: true, actions: [] },
+            ],
+        };
+
+        await testOrder(t, "rejection error does not terminate an acknowledged order",
+            mcController,
+            agvId1,
+            acknowledgedOrderWithRejectionError,
+            {
+                completes: true,
+                triggerOnEdgeTraversing: () => {
+                    agvController1.updatePartialState({
+                        errors: [{
+                            errorType: ErrorType.OrderNoRoute,
+                            errorLevel: ErrorLevel.Warning,
+                            errorDescription: "route temporarily blocked",
+                            errorReferences: [
+                                { referenceKey: "orderId", referenceValue: acknowledgedOrderWithRejectionError.orderId },
+                                { referenceKey: "orderUpdateId", referenceValue: "0" },
+                            ],
+                        }],
+                    }, true);
+                },
+            },
+        );
+
         agvController1.updatePartialState({ errors: [] }, true);
 
         /* ------------------------------------------------------------------ */
