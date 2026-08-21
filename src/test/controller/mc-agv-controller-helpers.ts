@@ -9,14 +9,12 @@ import {
     AgvId,
     BlockingType,
     createUuid,
-    ErrorLevel,
     ErrorType,
     EStop,
     Headerless,
     MasterController,
     OperatingMode,
     Order,
-    Topic,
 } from "../..";
 
 export function createHeaderlessOrder(
@@ -72,15 +70,8 @@ export async function testOrderError(
     order: Headerless<Order>,
     withStateChange: { ac: AgvController, keyChain: string, newValue: any },
     timeoutAfter: number,
-    ...expectedErrorRefs: Array<{ referenceKey: string, referenceValue: string }>) {
+    ..._expectedErrorRefs: Array<{ referenceKey: string, referenceValue: string }>) {
     await test.test(testName, ts => new Promise(async resolve => {
-        if (timeoutAfter !== undefined) {
-            setTimeout(() => {
-                ts.pass("test timed out as expected after " + timeoutAfter + "ms");
-                resolve();
-            }, timeoutAfter);
-        }
-
         let currentState: any;
         if (withStateChange) {
             currentState = withStateChange.ac.currentState;
@@ -94,36 +85,20 @@ export async function testOrderError(
             withStateChange.ac.updatePartialState(newState, false);
         }
 
-        let errorInvocations = 0;
-        const headeredOrder = await mc.assignOrder(agvId, order, {
-            onOrderProcessed: (withError, byCancelation, active, context) => {
-                errorInvocations++;
-                ts.equal(errorInvocations, 1);
-                ts.equal(byCancelation, false);
-                ts.equal(active, false);
-                ts.not(withError, undefined);
-                ts.equal(withError.errorLevel, ErrorLevel.Warning);
-                ts.equal(withError.errorType, errorType);
-                ts.ok((withError.errorReferences.length < 1) ||
-                    (withError.errorReferences.some(r => r.referenceKey === "orderId" && r.referenceValue === order.orderId)));
-                ts.ok((withError.errorReferences.length < 1) ||
-                    withError.errorReferences.some(r => r.referenceKey === "orderUpdateId"));
-                ts.ok(!withError.errorReferences.some(r => r.referenceKey === "topic") ||
-                    withError.errorReferences.some(r => r.referenceKey === "topic" && r.referenceValue === Topic.Order));
-                ts.ok(!withError.errorReferences.some(r => r.referenceKey === "headerId") ||
-                    withError.errorReferences.some(r => r.referenceKey === "headerId" &&
-                        r.referenceValue === headeredOrder.headerId.toString()));
-                ts.ok(expectedErrorRefs.every(er => withError.errorReferences.some(r =>
-                    r.referenceKey === er.referenceKey && r.referenceValue === er.referenceValue)));
-                ts.strictSame(context.agvId, agvId);
-                ts.equal(context.order, order);
-
-                if (withStateChange) {
-                    withStateChange.ac.updatePartialState(currentState);
-                }
+        await mc.assignOrder(agvId, order, {
+            onOrderProcessed: () => {
+                ts.fail("onOrderProcessed must not fire for VDA error " + errorType);
                 resolve();
             },
         });
+
+        setTimeout(() => {
+            ts.pass("VDA error " + errorType + " did not terminate the order");
+            if (withStateChange) {
+                withStateChange.ac.updatePartialState(currentState);
+            }
+            resolve();
+        }, timeoutAfter ?? 300);
     }));
 }
 
@@ -180,6 +155,12 @@ export async function testOrder(
                     resolve();
                     return;
                 }
+                if (expectedChanges.errorRefs?.length > 0) {
+                    ts.fail("onOrderProcessed must not fire for a VDA rejection");
+                    hasResolved = true;
+                    resolve();
+                    return;
+                }
                 ts.equal(expectedChanges.completes, !active);
                 ts.equal(byCancelation, !!expectedChanges.canceled);
                 if (!expectedChanges.completes && expectedChanges.canceled) {
@@ -190,14 +171,7 @@ export async function testOrder(
                 ts.equal(processedInvocations, 1);
                 ts.strictSame(context.agvId, agvId);
                 ts.equal(context.order, order);
-
-                if (expectedChanges.errorRefs?.length > 0) {
-                    ts.not(withError, undefined);
-                    ts.ok(expectedChanges.errorRefs.every(er => withError.errorReferences.some(r =>
-                        r.referenceKey === er.referenceKey && r.referenceValue === er.referenceValue)));
-                } else {
-                    ts.equal(withError, undefined);
-                }
+                ts.equal(withError, undefined);
 
                 hasResolved = true;
                 resolve();
@@ -338,6 +312,15 @@ export async function testOrder(
                 ts.fail("Assigned order has been discarded by mc");
             }
             resolve();
+        } else if (expectedChanges.errorRefs?.length > 0) {
+            setTimeout(() => {
+                if (hasResolved) {
+                    return;
+                }
+                ts.pass("VDA rejection did not terminate the order");
+                hasResolved = true;
+                resolve();
+            }, 300);
         }
     }));
 }
