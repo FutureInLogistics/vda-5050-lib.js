@@ -360,6 +360,8 @@ export class MasterController extends MasterControlClient {
     // Order state caches mapped by agvId, orderId, orderUpdateId.
     private readonly _currentOrders: AgvIdMap<Map<string, Map<number, OrderStateCache>>> = new AgvIdMap();
 
+    private readonly _lastReportedOrders: AgvIdMap<{ orderId: string; orderUpdateId: number }> = new AgvIdMap();
+
     // Instant action state caches mapped by agvId, actionId.
     private readonly _currentInstantActions: AgvIdMap<Map<string, InstantActionStateCache>> = new AgvIdMap();
 
@@ -696,6 +698,10 @@ export class MasterController extends MasterControlClient {
     }
 
     private _dispatchState(state: State, agvId: AgvId) {
+        this._lastReportedOrders.set(agvId, {
+            orderId: state.orderId,
+            orderUpdateId: state.orderUpdateId,
+        });
         const orderStateCache = this._getOrderStateCache(agvId, state.orderId, state.orderUpdateId);
         if (orderStateCache !== undefined) {
             orderStateCache.hasBeenAcknowledged = true;
@@ -985,12 +991,14 @@ export class MasterController extends MasterControlClient {
     }
 
     private _addOrderStateCache(agvId: AgvId, order: Headerless<Order>, eventHandler: OrderEventHandler) {
+        const lastReportedOrder = this._lastReportedOrders.get(agvId);
         const cache: OrderStateCache = {
             agvId,
             order: order,
             eventHandler,
             lastOrderProcessedIsActive: null,
-            hasBeenAcknowledged: false,
+            hasBeenAcknowledged: lastReportedOrder?.orderId === order.orderId &&
+                lastReportedOrder.orderUpdateId === order.orderUpdateId,
             lastCache: this._getLastAssignedOrderStateCache(agvId),
             combinedOrder: {
                 edges: [...order.edges],
