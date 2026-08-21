@@ -24,6 +24,15 @@ import {
     Topic,
 } from "..";
 
+// Spec order-rejection error types. Only these fail an order; error level
+// (WARNING, FATAL, CRITICAL, URGENT) never does.
+const ORDER_FAILING_ERROR_TYPES = new Set<string>([
+    ErrorType.Order,
+    ErrorType.OrderUpdate,
+    ErrorType.OrderNoRoute,
+    ErrorType.OrderValidation,
+]);
+
 /**
  * Represents context information of an order event.
  *
@@ -687,7 +696,75 @@ export class MasterController extends MasterControlClient {
     }
 
     private _dispatchState(state: State, agvId: AgvId) {
-        // Dispatch active order/action state. Do it before
+        // First, check if an assigned order has been rejected with an error in the
+        // first place. Note that in this case, the order is not executed and
+        // state.orderId still refers to the previous order (if any). We have to
+        // scan all state errors for error type and references that match an
+        // assigned order.
+        for (const error of state.errors) {
+            let topic: string;
+            let orderId: string;
+            let orderUpdateId: number;
+            let hasActionIdRef = false;
+            let cache: OrderStateCache;
+            if (error.errorReferences !== undefined) {
+                for (const errorRef of error.errorReferences) {
+                    if (errorRef.referenceKey === "actionId") {
+                        hasActionIdRef = true;
+                    }
+                    if (errorRef.referenceKey === "topic") {
+                        topic = errorRef.referenceValue;
+                    }
+                    if (errorRef.referenceKey === "orderId") {
+                        orderId = errorRef.referenceValue;
+                    }
+                    if (errorRef.referenceKey === "orderUpdateId") {
+                        orderUpdateId = parseInt(errorRef.referenceValue, 10);
+                    }
+                }
+            }
+            if (topic !== undefined && topic !== Topic.Order) {
+                continue;
+            }
+            if (hasActionIdRef && error.errorType !== ErrorType.Order) {
+                // Error is an order-related action error caused by a failed
+                // action (with ErrorType.OrderAction).
+                continue;
+            }
+            if (!ORDER_FAILING_ERROR_TYPES.has(error.errorType)) {
+                continue;
+            }
+            // Spec order-rejection types only. Terminates the referenced order,
+            // or — when order-less — the last assigned order.
+            if (orderId !== undefined && orderUpdateId !== undefined) {
+                cache = this._getOrderStateCache(agvId, orderId, orderUpdateId);
+            } else if (topic === Topic.Order && error.errorType === ErrorType.OrderValidation) {
+                // In case a validation error occurs where no orderId and
+                // orderUpdateId can be extracted from the invalid order object
+                // we cannot reliably determine the corresponding order assigned
+                // by the master controller. Note that in case of stitching
+                // orders it might not be always the order assigned most
+                // recently for the given agvId.
+                //
+                // To prevent such cases, it is recommended to always validate
+                // outbound topic objects with master controller client option
+                // "topicObjectValidation" (default is true).
+            } else if (orderId === undefined) {
+                // No orderId in the error references: attribute this rejection
+                // type to the last assigned order.
+                cache = this._getLastAssignedOrderStateCache(agvId);
+            }
+            if (cache !== undefined) {
+                // Clear cache entry to support follow-up assignment of an order
+                // with same orderId and orderUpdateId. Keep lastCache to
+                // support stitching orders after rejected stitching orders.
+                this._removeOrderStateCache(cache);
+                this.debug("onOrderProcessed with error %o for cache %o with state %j", error, cache, state);
+                cache.eventHandler.onOrderProcessed(error, false, false, { order: cache.order, agvId, state });
+            }
+        }
+
+        // Then, try to dispatch active order/action state and errors. Do it before
         // dispatching instant action states so that instant action state related to
         // this order is still present (cp. cancelOrder).
         const orderStateCache = this._getOrderStateCache(agvId, state.orderId, state.orderUpdateId);

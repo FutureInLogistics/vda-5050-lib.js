@@ -361,6 +361,7 @@ initTestContext(tap);
         /* ------------------------------------------------------------------ */
 
         await t.test("order rejection adds error without clearing previous errors", ts => new Promise(async resolve => {
+            // Pre-populate an error in the AGV controller state
             const currentState = agvController2.currentState;
             const stateWithError = JSON.parse(JSON.stringify(currentState));
             stateWithError.errors = [{
@@ -371,28 +372,29 @@ initTestContext(tap);
             }];
             agvController2.updatePartialState(stateWithError, false);
 
-            let processed = false;
+            // Send an invalid order to agvId2 — should add another error
             await mcControllerNoValidation.assignOrder(agvId2, {
                 orderId: "multiErr",
                 orderUpdateId: 0,
                 nodes: [],
                 edges: [],
             }, {
-                onOrderProcessed: () => {
-                    processed = true;
+                onOrderProcessed: (withError, byCancelation, active, context) => {
+                    ts.not(withError, undefined, "order should fail with error");
+                    ts.equal(withError.errorType, ErrorType.OrderNoRoute);
+
+                    // Verify that state still has multiple errors
+                    const state = agvController2.currentState;
+                    ts.ok(state.errors.length >= 2,
+                        "state should have at least 2 errors (pre-existing + new)");
+                    ts.ok(state.errors.some(e => e.errorDescription === "Pre-existing error"),
+                        "pre-existing error should still be present");
+
+                    // Restore state
+                    agvController2.updatePartialState(currentState);
+                    resolve();
                 },
             });
-
-            setTimeout(() => {
-                ts.equal(processed, false, "VDA errors must not terminate the order");
-                const state = agvController2.currentState;
-                ts.ok(state.errors.length >= 2,
-                    "state should have at least 2 errors (pre-existing + new)");
-                ts.ok(state.errors.some(e => e.errorDescription === "Pre-existing error"),
-                    "pre-existing error should still be present");
-                agvController2.updatePartialState(currentState);
-                resolve();
-            }, 300);
         }));
 
         /* ------------------------------------------------------------------ */
