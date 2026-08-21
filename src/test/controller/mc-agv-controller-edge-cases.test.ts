@@ -381,7 +381,7 @@ initTestContext(tap);
             }, {
                 onOrderProcessed: (withError, byCancelation, active, context) => {
                     ts.not(withError, undefined, "order should fail with error");
-                    ts.equal(withError.errorType, ErrorType.OrderNoRoute);
+                    ts.equal(withError.errorType, ErrorType.OrderValidation);
 
                     // Verify that state still has multiple errors
                     const state = agvController2.currentState;
@@ -529,6 +529,142 @@ initTestContext(tap);
             },
             { completes: true, isStitching: true },
         );
+
+        /* ------------------------------------------------------------------ */
+        /* FATAL health errors must not terminate an in-flight order           */
+        /* ------------------------------------------------------------------ */
+
+        const fatalHealthOrderLess = {
+            orderId: createUuid(),
+            orderUpdateId: 0,
+            nodes: [
+                { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+                { nodeId: "n2", sequenceId: 2, released: true, nodePosition: { x: 10, y: 0, mapId: "local" }, actions: [] },
+            ],
+            edges: [
+                { edgeId: "e12", sequenceId: 1, startNodeId: "n1", endNodeId: "n2", released: true, actions: [] },
+            ],
+        };
+
+        await testOrder(t, "FATAL health error without orderId does not terminate the active order",
+            mcController,
+            agvId1,
+            fatalHealthOrderLess,
+            {
+                completes: true,
+                triggerOnEdgeTraversing: () => {
+                    agvController1.updatePartialState({
+                        errors: [{
+                            errorType: "LOCALIZATION_ERROR",
+                            errorLevel: ErrorLevel.Fatal,
+                            errorDescription: "lost localization",
+                            errorReferences: [],
+                        }],
+                    }, true);
+                },
+            },
+        );
+
+        const fatalHealthOrderReferenced = {
+            orderId: createUuid(),
+            orderUpdateId: 0,
+            nodes: [
+                { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+                { nodeId: "n2", sequenceId: 2, released: true, nodePosition: { x: 10, y: 0, mapId: "local" }, actions: [] },
+            ],
+            edges: [
+                { edgeId: "e12", sequenceId: 1, startNodeId: "n1", endNodeId: "n2", released: true, actions: [] },
+            ],
+        };
+
+        await testOrder(t, "FATAL health error referencing the order does not terminate it",
+            mcController,
+            agvId1,
+            fatalHealthOrderReferenced,
+            {
+                completes: true,
+                triggerOnEdgeTraversing: () => {
+                    agvController1.updatePartialState({
+                        errors: [{
+                            errorType: "LOCALIZATION_ERROR",
+                            errorLevel: ErrorLevel.Fatal,
+                            errorDescription: "lost localization",
+                            errorReferences: [
+                                { referenceKey: "orderId", referenceValue: fatalHealthOrderReferenced.orderId },
+                                { referenceKey: "orderUpdateId", referenceValue: "0" },
+                            ],
+                        }],
+                    }, true);
+                },
+            },
+        );
+
+        const orderLessRejection = {
+            orderId: createUuid(),
+            orderUpdateId: 0,
+            nodes: [
+                { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+                { nodeId: "n2", sequenceId: 2, released: true, nodePosition: { x: 10, y: 0, mapId: "local" }, actions: [] },
+            ],
+            edges: [
+                { edgeId: "e12", sequenceId: 1, startNodeId: "n1", endNodeId: "n2", released: true, actions: [] },
+            ],
+        };
+
+        await testOrder(t, "order-less rejection does not terminate the active order",
+            mcController,
+            agvId1,
+            orderLessRejection,
+            {
+                completes: true,
+                triggerOnEdgeTraversing: () => {
+                    agvController1.updatePartialState({
+                        errors: [{
+                            errorType: ErrorType.OrderNoRoute,
+                            errorLevel: ErrorLevel.Warning,
+                            errorDescription: "MOTORS_CANNOT_DRIVE",
+                            errorReferences: [],
+                        }],
+                    }, true);
+                },
+            },
+        );
+
+        const acknowledgedOrderWithRejectionError = {
+            orderId: createUuid(),
+            orderUpdateId: 0,
+            nodes: [
+                { nodeId: "n1", sequenceId: 0, released: true, actions: [] },
+                { nodeId: "n2", sequenceId: 2, released: true, nodePosition: { x: 10, y: 0, mapId: "local" }, actions: [] },
+            ],
+            edges: [
+                { edgeId: "e12", sequenceId: 1, startNodeId: "n1", endNodeId: "n2", released: true, actions: [] },
+            ],
+        };
+
+        await testOrder(t, "rejection error does not terminate an acknowledged order",
+            mcController,
+            agvId1,
+            acknowledgedOrderWithRejectionError,
+            {
+                completes: true,
+                triggerOnEdgeTraversing: () => {
+                    agvController1.updatePartialState({
+                        errors: [{
+                            errorType: ErrorType.OrderNoRoute,
+                            errorLevel: ErrorLevel.Warning,
+                            errorDescription: "route temporarily blocked",
+                            errorReferences: [
+                                { referenceKey: "orderId", referenceValue: acknowledgedOrderWithRejectionError.orderId },
+                                { referenceKey: "orderUpdateId", referenceValue: "0" },
+                            ],
+                        }],
+                    }, true);
+                },
+            },
+        );
+
+        agvController1.updatePartialState({ errors: [] }, true);
 
         /* ------------------------------------------------------------------ */
         /* FR-14: Multiple instant actions in one request                      */

@@ -24,6 +24,16 @@ import {
     Topic,
 } from "..";
 
+// VDA 5050 2.1 section 6.6.4 defines orderError, orderUpdateError, and
+// validationError as order rejections. This library also emits noRouteError
+// when rejecting an order whose route is not traversable.
+const ORDER_REJECTION_ERROR_TYPES = new Set<string>([
+    ErrorType.Order,
+    ErrorType.OrderUpdate,
+    ErrorType.OrderNoRoute,
+    ErrorType.OrderValidation,
+]);
+
 /**
  * Represents context information of an order event.
  *
@@ -687,6 +697,8 @@ export class MasterController extends MasterControlClient {
     }
 
     private _dispatchState(state: State, agvId: AgvId) {
+        const orderStateCache = this._getOrderStateCache(agvId, state.orderId, state.orderUpdateId);
+
         // First, check if an assigned order has been rejected with an error in the
         // first place. Note that in this case, the order is not executed and
         // state.orderId still refers to the previous order (if any). We have to
@@ -722,24 +734,15 @@ export class MasterController extends MasterControlClient {
                 // action (with ErrorType.OrderAction).
                 continue;
             }
-            if (orderId !== undefined && orderUpdateId !== undefined) {
-                cache = this._getOrderStateCache(agvId, orderId, orderUpdateId);
-            } else if (topic === Topic.Order && error.errorType === ErrorType.OrderValidation) {
-                // In case a validation error occurs where no orderId and
-                // orderUpdateId can be extracted from the invalid order object
-                // we cannot reliably determine the corresponding order assigned
-                // by the master controller. Note that in case of stitching
-                // orders it might not be always the order assigned most
-                // recently for the given agvId.
-                //
-                // To prevent such cases, it is recommended to always validate
-                // outbound topic objects with master controller client option
-                // "topicObjectValidation" (default is true).
-            } else if (orderId === undefined) {
-                // In case that there are no orderId in the error references, get the last assigned order from cache
-                cache = this._getLastAssignedOrderStateCache(agvId);
+            if (!ORDER_REJECTION_ERROR_TYPES.has(error.errorType)) {
+                continue;
             }
-            if (cache !== undefined) {
+            if (orderId === undefined || orderUpdateId === undefined) {
+                continue;
+            }
+            cache = this._getOrderStateCache(agvId, orderId, orderUpdateId);
+            const isOrderAcknowledged = state.orderId === orderId && state.orderUpdateId === orderUpdateId;
+            if (cache !== undefined && !isOrderAcknowledged) {
                 // Clear cache entry to support follow-up assignment of an order
                 // with same orderId and orderUpdateId. Keep lastCache to
                 // support stitching orders after rejected stitching orders.
@@ -752,7 +755,6 @@ export class MasterController extends MasterControlClient {
         // Then, try to dispatch active order/action state and errors. Do it before
         // dispatching instant action states so that instant action state related to
         // this order is still present (cp. cancelOrder).
-        const orderStateCache = this._getOrderStateCache(agvId, state.orderId, state.orderUpdateId);
         if (orderStateCache) {
             this._dispatchOrderState(state, orderStateCache);
         }
@@ -1036,9 +1038,8 @@ export class MasterController extends MasterControlClient {
         // to the removed cache: re-point it to the most recent predecessor that
         // is still being tracked (resolved like order stitching does, see
         // `_getLastActiveOrderStateCache`). This keeps introspection
-        // (`OrderInfo.isLatestAssigned`), attribution of order errors without
-        // order references, and stitching of subsequently assigned orders
-        // resolving to a tracked cache instead of a removed one.
+        // (`OrderInfo.isLatestAssigned`) and stitching of subsequently assigned
+        // orders resolving to a tracked cache instead of a removed one.
         if (orderIds["lastCache"] === cache) {
             orderIds["lastCache"] = cache.lastCache === undefined ? undefined : this._getLastActiveOrderStateCache(cache);
         }
