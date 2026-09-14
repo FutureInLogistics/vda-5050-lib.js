@@ -965,17 +965,17 @@ export class MasterController extends MasterControlClient {
 
         // Check if order has been processed successfully or has been canceled
         // by instant action "cancelOrder".
-        const result = this._isOrderProcessed(cache, state);
-        const isActive = result === undefined;
-        if (result !== false && cache.lastOrderProcessedIsActive !== isActive) {
+        const isProcessed = cache.canceled && state.nodeStates.length === 0 && state.edgeStates.length === 0
+            ? true
+            : this._isOrderProcessed(cache, state);
+        const isActive = isProcessed === undefined;
+        if (isProcessed !== false && cache.lastOrderProcessedIsActive !== isActive) {
             const byCancelation = cache.canceled;
             if (byCancelation) {
                 this.debug("onOrderProcessed by cancelation in state active=%s", isActive);
             } else {
                 this.debug("onOrderProcessed in state active=%s", isActive);
             }
-            // Keep active order state cache for stitching orders. Cache will be
-            // removed on first state event on stitched order.
             if (!isActive) {
                 this._removeOrderStateCache(cache, true);
             }
@@ -1199,7 +1199,9 @@ export class MasterController extends MasterControlClient {
             for (const [actionId, actionStateCache] of actionStateCaches) {
                 if (actionStateCache.action.actionType === "cancelOrder") {
                     const as = state.actionStates.find(s => s.actionId === actionId);
-                    return as !== undefined && cancelStatus.includes(as.actionStatus);
+                    if (as !== undefined && cancelStatus.includes(as.actionStatus)) {
+                        return true;
+                    }
                 }
             }
         }
