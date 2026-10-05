@@ -976,6 +976,8 @@ export class MasterController extends MasterControlClient {
             } else {
                 this.debug("onOrderProcessed in state active=%s", isActive);
             }
+            // Keep active order state cache for stitching orders. Cache will be
+            // removed on first state event on stitched order.
             if (!isActive) {
                 this._removeOrderStateCache(cache, true);
             }
